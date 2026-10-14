@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SOJOL Laptop Pairing</title>
+<style>
+body{margin:0;background:#0c1018;color:#f5d56b;font:16px system-ui;padding:20px}
+main{max-width:760px;margin:auto;background:#151b26;border:1px solid #806824;border-radius:16px;padding:20px}
+input,button{padding:12px;border-radius:8px;border:1px solid #806824;margin:5px 4px 5px 0}
+input{background:#080b11;color:white;width:min(95%,400px)}button{background:#f1ca51;color:#111;font-weight:bold;cursor:pointer}
+#code{font-size:40px;letter-spacing:8px;font-weight:800;margin:14px 0}.status{color:#fff;overflow-wrap:anywhere}
+video{width:100%;max-height:420px;background:#000;border-radius:10px;margin-top:10px}
+small{color:#ccc}
+</style>
+</head>
+<body><main>
+<h1>SOJOL AI TRADING — Laptop Connector</h1>
+<p class="status" id="status">Backend URL বসিয়ে Connect চাপুন।</p>
+<label>Socket.IO Backend URL</label><br>
+<input id="backend" placeholder="https://your-service.onrender.com">
+<button id="connect">Connect Backend</button>
+<hr>
+<h2>Device Pairing</h2>
+<button id="generate">Generate 6-digit code</button>
+<div id="code">------</div>
+<p class="status" id="pairStatus">Waiting for mobile</p>
+<hr>
+<h2>TradingView Screen Share</h2>
+<button id="share">Request Screen Share</button><button id="stop">Stop</button>
+<p><small>Share চালু হলে browser permission dialog থেকে TradingView tab নির্বাচন করুন।</small></p>
+<video id="preview" autoplay muted playsinline></video>
+</main>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<script>
+let socket=null, stream=null, pc=null, connected=false;
+const $=id=>document.getElementById(id);
+function status(t){$('status').textContent=t}
+function requireSocket(){if(!socket||!socket.connected)throw new Error('আগে Backend Connect করুন')}
+function setupPeer(){
+  if(pc)return pc;
+  pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  pc.onicecandidate=e=>{if(e.candidate&&socket)socket.emit('webrtc:ice',e.candidate)};
+  pc.onconnectionstatechange=()=>{$('pairStatus').textContent='WebRTC: '+pc.connectionState};
+  socket.on('webrtc:answer',async d=>{if(pc&&pc.signalingState==='have-local-offer')await pc.setRemoteDescription(d)});
+  socket.on('webrtc:ice',async c=>{try{if(pc)await pc.addIceCandidate(c)}catch(e){console.warn(e)}});
+  return pc;
+}
+$('connect').onclick=()=>{
+  try{
+    const url=$('backend').value.trim().replace(/\/+$/,'');if(!url)throw Error('Backend URL লিখুন');
+    if(socket)socket.disconnect();
+    socket=io(url,{transports:['websocket','polling']});
+    socket.on('connect',()=>status('Backend connected: '+socket.id));
+    socket.on('connect_error',e=>status('Backend connection error: '+e.message));
+    socket.on('disconnect',()=>status('Backend disconnected'));
+    socket.on('pair:status',d=>{$('pairStatus').textContent=d.message;$('pairStatus').dataset.connected=String(d.connected)});
+    socket.on('peer:disconnected',()=>{$('pairStatus').textContent='Mobile disconnected'});
+    socket.on('webrtc:offer',async d=>{
+      const p=setupPeer();await p.setRemoteDescription(d);
+      const answer=await p.createAnswer();await p.setLocalDescription(answer);
+      socket.emit('webrtc:answer',p.localDescription);
+    });
+  }catch(e){status(e.message)}
+};
+$('generate').onclick=()=>{
+  try{requireSocket();socket.emit('pair:create',d=>{
+    if(!d.ok){$('pairStatus').textContent=d.error;return}
+    $('code').textContent=d.code;$('pairStatus').textContent='Code ready — mobile-এ code দিন (৫ মিনিটের মধ্যে)';
+  })}catch(e){$('pairStatus').textContent=e.message}
+};
+$('share').onclick=async()=>{
+  try{
+    requireSocket();if(!$('pairStatus').dataset.connected||$('pairStatus').dataset.connected!=='true')throw Error('আগে mobile pair করুন');
+    stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:15},audio:false});
+    $('preview').srcObject=stream;
+    const p=setupPeer();stream.getTracks().forEach(t=>p.addTrack(t,stream));
+    const offer=await p.createOffer();await p.setLocalDescription(offer);socket.emit('webrtc:offer',p.localDescription);
+    stream.getVideoTracks()[0].onended=()=>{$('pairStatus').textContent='Screen sharing off'};
+    $('pairStatus').textContent='Screen sharing requested';
+  }catch(e){status('Screen share error: '+e.message)}
+};
+$('stop').onclick=()=>{if(stream)stream.getTracks().forEach(t=>t.stop());if(pc){pc.close();pc=null}$('preview').srcObject=null;$('pairStatus').textContent='Screen sharing off'};
+</script></body></html>
